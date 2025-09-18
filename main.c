@@ -444,7 +444,6 @@ void releaseValue(PseudoLRUCache *cache, CacheValue *cv)
 {
     if (!cv)
     {
-        cache_unlock(cache);
         return;
     }
 
