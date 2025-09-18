@@ -113,9 +113,9 @@ unsigned int hash(const char *key, int hash_size)
 PseudoLRUCache *createCache(int cache_size, void (*value_free)(void *))
 {
     PseudoLRUCache *cache = (PseudoLRUCache *)malloc(sizeof(PseudoLRUCache));
-
     if (!cache)
     {
+        ESP_LOGE(TAG, "Failed to allocate cache");
         return NULL;
     }
 
@@ -148,6 +148,7 @@ PseudoLRUCache *createCache(int cache_size, void (*value_free)(void *))
     cache->lock = xSemaphoreCreateMutex();
     if (!cache->lock || !cache->tree || !cache->cache.keys || !cache->cache.values || !cache->hash_table)
     {
+        ESP_LOGE(TAG, "Failed to allocate cache resources");
         free(cache->tree);
         free(cache->cache.keys);
         free(cache->cache.values);
@@ -172,6 +173,21 @@ void printTree(PseudoLRUCache *cache)
     }
     bits[cache->tree_nodes] = '\0';
     ESP_LOGI(TAG, "Tree bits: %s", bits);
+}
+
+void printCacheState(PseudoLRUCache *cache)
+{
+    char state[256] = {0};
+    int offset = 0;
+    for (int i = 0; i < cache->cache_size; i++)
+    {
+        if (cache->cache.keys[i])
+        {
+            offset += snprintf(state + offset, sizeof(state) - offset, "[%d: %s, ref=%d] ",
+                               i, cache->cache.keys[i], cache->cache.values[i] ? cache->cache.values[i]->refcount : 0);
+        }
+    }
+    ESP_LOGI(TAG, "Cache state: %s", state);
 }
 
 void updateTree(PseudoLRUCache *cache, int index)
@@ -232,6 +248,7 @@ void rehash(PseudoLRUCache *cache)
     cache->hash_table = (HashEntry *)malloc(cache->hash_size * sizeof(HashEntry));
     if (!cache->hash_table)
     {
+        ESP_LOGE(TAG, "Failed to allocate new hash table");
         cache->hash_table = old_table;
         cache->hash_size = old_size;
         return;
@@ -350,6 +367,7 @@ CacheValue *accessCache(PseudoLRUCache *cache, const char *key, void *value, siz
             ESP_LOGI(TAG, "Cache hit → key: %s in line %d ref=%d", key, index, cv->refcount);
             updateTree(cache, index);
             printTree(cache);
+            printCacheState(cache);
             cache_unlock(cache);
             return cv;
         }
@@ -362,34 +380,35 @@ CacheValue *accessCache(PseudoLRUCache *cache, const char *key, void *value, siz
         eraseHash(cache, cache->cache.keys[index]);
         free(cache->cache.keys[index]);
         cache->cache.keys[index] = NULL;
+    }
 
-        CacheValue *old = cache->cache.values[index];
+    CacheValue *old = cache->cache.values[index];
 
-        if (old)
+    if (old)
+    {
+        if (old->refcount == 0)
         {
-            if (old->refcount == 0)
-            {
-                cache->value_free(old->data);
-                free(old);
-            }
-            else
-            {
-                old->index = -1; // Mark as evicted
-            }
-
-            cache->cache.values[index] = NULL;
+            cache->value_free(old->data);
+            free(old);
         }
+        else
+        {
+            old->index = -1; // Mark as evicted
+        }
+        cache->cache.values[index] = NULL;
     }
 
     cache->cache.keys[index] = strdup(key);
     if (!cache->cache.keys[index])
     {
+        ESP_LOGE(TAG, "Failed to allocate key");
         cache_unlock(cache);
         return NULL;
     }
     CacheValue *cv = (CacheValue *)malloc(sizeof(CacheValue));
     if (!cv)
     {
+        ESP_LOGE(TAG, "Failed to allocate CacheValue");
         free(cache->cache.keys[index]);
         cache->cache.keys[index] = NULL;
         cache_unlock(cache);
@@ -398,6 +417,7 @@ CacheValue *accessCache(PseudoLRUCache *cache, const char *key, void *value, siz
     cv->data = malloc(value_size);
     if (!cv->data)
     {
+        ESP_LOGE(TAG, "Failed to allocate data");
         free(cv);
         free(cache->cache.keys[index]);
         cache->cache.keys[index] = NULL;
@@ -414,6 +434,7 @@ CacheValue *accessCache(PseudoLRUCache *cache, const char *key, void *value, siz
     ESP_LOGI(TAG, "Cache miss → stored key: %s in line %d ref=1", key, index);
     updateTree(cache, index);
     printTree(cache);
+    printCacheState(cache);
 
     cache_unlock(cache);
     return cv;
@@ -430,15 +451,9 @@ void releaseValue(PseudoLRUCache *cache, CacheValue *cv)
     cache_lock(cache);
     cv->refcount--;
 
-    if (cv->refcount == 0)
+    if (cv->refcount == 0 && cv->index == -1)
     {
         cache->value_free(cv->data);
-
-        if (cv->index >= 0 && cv->index < cache->cache_size && cache->cache.values[cv->index] == cv)
-        {
-            cache->cache.values[cv->index] = NULL;
-        }
-
         free(cv);
     }
 
@@ -451,7 +466,9 @@ void freeCache(PseudoLRUCache *cache)
     {
         if (cache->cache.keys[i])
         {
+            eraseHash(cache, cache->cache.keys[i]);
             free(cache->cache.keys[i]);
+            cache->cache.keys[i] = NULL;
         }
 
         CacheValue *cv = cache->cache.values[i];
@@ -469,6 +486,7 @@ void freeCache(PseudoLRUCache *cache)
                 cache->value_free(cv->data);
                 free(cv);
             }
+            cache->cache.values[i] = NULL;
         }
     }
 
@@ -488,8 +506,8 @@ void freeValue(void *ptr)
 
 #define NUM_THREADS 8
 #define OPS_PER_THREAD 1000
-#define YIELD_INTERVAL 100    // Yield every 100 operations
-#define TEST_INTERVAL_MS 5000 // 5 seconds between test cycles
+#define YIELD_INTERVAL 100
+#define TEST_INTERVAL_MS 5000
 
 typedef struct
 {
@@ -514,10 +532,9 @@ void threadFunc(void *arg)
             releaseValue(t->cache, cv);
         }
 
-        // Yield to prevent Watchdog timeout
         if ((i + 1) % YIELD_INTERVAL == 0)
         {
-            vTaskDelay(pdMS_TO_TICKS(10)); // Short delay to yield CPU
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
 
@@ -534,10 +551,11 @@ void app_main(void)
         return;
     }
 
-    const char *keys[] = {"A", "B", "C", "D", "E", "F", "C", "D", "G", "H"};
-    int values[] = {1, 2, 3, 4, 5, 6, 3, 4, 7, 8};
+    const char *keys[] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    int values[] = {1, 2, 3, 4, 5, 6, 7, 8};
+    int num_keys = 8;
 
-    while (1) // Periodic testing loop
+    while (1)
     {
         ESP_LOGI(TAG, "Starting new test cycle, free heap: %lu bytes", esp_get_free_heap_size());
         PseudoLRUCache *cache = createCache(4, freeValue);
@@ -557,7 +575,7 @@ void app_main(void)
             args[i].cache = cache;
             args[i].keys = keys;
             args[i].values = values;
-            args[i].num_keys = 8;
+            args[i].num_keys = num_keys;
             args[i].done_sem = done_sem;
 
             char task_name[16];
@@ -568,18 +586,18 @@ void app_main(void)
             }
         }
 
-        // Wait for all tasks to complete
         for (int i = 0; i < NUM_THREADS; i++)
         {
             xSemaphoreTake(done_sem, portMAX_DELAY);
         }
 
         freeCache(cache);
-        ESP_LOGE(TAG, "Test cycle completed, cache freed, free heap: %lu bytes", esp_get_free_heap_size());
+        ESP_LOGI(TAG, "Test cycle completed, cache freed, free heap: %lu bytes", esp_get_free_heap_size());
 
-        // Wait before starting next test cycle
         vTaskDelay(pdMS_TO_TICKS(TEST_INTERVAL_MS));
     }
 
-    vSemaphoreDelete(done_sem); // Unreachable, but included for completeness
+    vSemaphoreDelete(done_sem);
 }
+
+// idf.py -p COM5 -b 115200 flash monitor
