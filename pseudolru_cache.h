@@ -38,6 +38,13 @@ typedef struct
 
 typedef struct
 {
+    char *key;
+    int cache_index;
+    int state;
+} HashEntry;
+
+typedef struct
+{
     char **keys;
     CacheValue **values;
 } CacheArray;
@@ -48,6 +55,7 @@ typedef struct
     int tree_nodes;
     int *tree;
     CacheArray cache;
+    HashEntry *hash_table;
     int hash_size;
     int hash_used;
     void (*value_free)(void *);
