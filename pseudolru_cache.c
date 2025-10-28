@@ -25,13 +25,6 @@
 #include <freertos/semphr.h>
 #include <esp_random.h>
 
-typedef struct
-{
-    char *key;
-    int cache_index;
-    int state;
-} HashEntry;
-
 static void cache_lock(PseudoLRUCache *c)
 {
     xSemaphoreTake(c->lock, portMAX_DELAY);
