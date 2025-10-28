@@ -35,7 +35,7 @@ static void cache_unlock(PseudoLRUCache *c)
     xSemaphoreGive(c->lock);
 }
 
-static unsigned int next_prime(unsigned int n)
+unsigned int next_prime(unsigned int n)
 {
     while (1)
     {
@@ -59,7 +59,7 @@ static unsigned int next_prime(unsigned int n)
     }
 }
 
-static unsigned int hash(const char *key, int hash_size)
+unsigned int hash(const char *key, int hash_size)
 {
     unsigned int h = 2166136261u;
 
@@ -152,7 +152,7 @@ void printCacheState(PseudoLRUCache *cache)
     ESP_LOGI(CACHE_TAG, "Cache state: %s", state);
 }
 
-static void updateTree(PseudoLRUCache *cache, int index)
+void updateTree(PseudoLRUCache *cache, int index)
 {
     int leaf = index + cache->tree_nodes;
     int path[64], depth = 0;
@@ -183,7 +183,7 @@ static void updateTree(PseudoLRUCache *cache, int index)
     }
 }
 
-static int findReplacementIndex(PseudoLRUCache *cache)
+int findReplacementIndex(PseudoLRUCache *cache)
 {
     int node = 0;
 
@@ -202,7 +202,7 @@ static int findReplacementIndex(PseudoLRUCache *cache)
     return node - cache->tree_nodes;
 }
 
-static void rehash(PseudoLRUCache *cache)
+void rehash(PseudoLRUCache *cache)
 {
     int old_size = cache->hash_size;
     HashEntry *old_table = cache->hash_table;
@@ -237,7 +237,7 @@ static void rehash(PseudoLRUCache *cache)
     free(old_table);
 }
 
-static void insertHash(PseudoLRUCache *cache, char *key, int idx)
+void insertHash(PseudoLRUCache *cache, char *key, int idx)
 {
     if ((cache->hash_used * 10) / cache->hash_size >= 7)
     {
@@ -279,7 +279,7 @@ static void insertHash(PseudoLRUCache *cache, char *key, int idx)
     }
 }
 
-static void eraseHash(PseudoLRUCache *cache, const char *key)
+void eraseHash(PseudoLRUCache *cache, const char *key)
 {
     unsigned int h = hash(key, cache->hash_size);
 
@@ -296,7 +296,7 @@ static void eraseHash(PseudoLRUCache *cache, const char *key)
     }
 }
 
-static int getCacheIndex(PseudoLRUCache *cache, const char *key)
+int getCacheIndex(PseudoLRUCache *cache, const char *key)
 {
     unsigned int h = hash(key, cache->hash_size);
 
